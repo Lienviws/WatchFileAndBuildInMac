@@ -2,8 +2,8 @@
  * @function 基于node.js监听目录的js的变化
  * @author Lienviws
  * @create 2015.12.21
- * @lastModify 2016.1.15
- * @version 0.3.3
+ * @lastModify 2016.6.2
+ * @version 0.4
  * @hit 1.这里node版设置xml注释不解析，但是win版的会(可以在配置中设置)
  *      2.packAll.xml打包的时候并不能在新窗口显示log，为了防止界面过乱因此隐藏log(可以在配置中设置)
  *      3.只会监听文件内容改变，忽略重命名以及删除操作
@@ -11,8 +11,6 @@
 
 //------------ config start ------------->
 var coreFunc = libFunc();
-var path = process.cwd() + "/";  //普通命令行里的路径
-// var path = "m2015/js/";    //vsCode上的路径
 //全局配置
 var config = {
     //忽略xml中的注释
@@ -20,9 +18,7 @@ var config = {
     //输出ant打包的log
     showAntLog : false,
     //过滤列表开关
-    ignoreDirList : true,
-    //操作系统是否windows
-    windows : process.platform === "win32"
+    ignoreDirList : true
 };
 //过滤列表{Array}
 var ignoreDirList = [
@@ -38,11 +34,13 @@ var xmlObjList = {};
 //------------ main func start ------------->
 var fs = require("fs");
 var exec = require("child_process").exec;	//cmd
+var path = require("path");
+addPromiseDone();
 
 (function(){
-    console.log("当前目录: " + path);
+    console.log("当前目录: " + rootPath);
     //提前建立packs目录
-    var packsDir = path + "packs";
+    var packsDir = rootPath + "packs";
     fs.exists(packsDir,function(exists){
         if(!exists){
             fs.mkdir(packsDir);
@@ -52,27 +50,11 @@ var exec = require("child_process").exec;	//cmd
     //先全部文件打个包
     console.log("执行ant构建:packAll.xml,请稍后...");
     antBuild("packAll.xml", "", config.showAntLog, main);
-    
     function main(){
         //写文件映射列表
-        fs.readdir(path, function(err,files){
-            files.forEach(function(file) {
-                if(file.indexOf(".pack.js.xml") != -1){
-                    getWatchDir(file, function(dirList){
                         coreFunc.extend(watchObjList,dirList);
                         coreFunc.extend(xmlObjList,coreFunc.invertObjObj(dirList));
-                    }, this);
-                }
-            }, this);
-            
-            //文件映射列表的回调
-            //无法直接给解析xml设置回调
-            coreFunc.watchObjChange(watchObjList,function(){
-                console.log("===正在监控文件变化，使用control+c或者点击关闭按钮退出===");
-            });
-        });
         
-        //设置目录监听
         setAllWatch(function(xmlList){
             var date = coreFunc.formatDate("[yyyy.MM.dd hh:mm:ss]", new Date());
             xmlList.forEach(function(xml) {
@@ -81,7 +63,6 @@ var exec = require("child_process").exec;	//cmd
             }, this);
         });
         
-        //xml打包文件的监听
         setRootWatch("",function(filename){
             var date = coreFunc.formatDate("[yyyy.MM.dd hh:mm:ss]", new Date());
             antBuild(filename, "-S", config.showAntLog);
@@ -99,10 +80,6 @@ var exec = require("child_process").exec;	//cmd
  * @param context 上下文环境
  */
 function getWatchDir(dirName, func, context){
-    var dirList = {};
-    fs.readFile(path + dirName,'utf-8',function(err,data){
-        if(!err){            
-            //得到property的属性
             var propList = getXmlNodeProp(data, "property");
             var fullDirXml = data;
             if(propList.length != 0){
@@ -116,13 +93,10 @@ function getWatchDir(dirName, func, context){
                     }else if(fileset.location){
                         value = fileset.location;
                     }else{
-                        console.log(path + dirName + ":property prop error!");
                     }
                     fullDirXml = fullDirXml.replace(regexp,value);
                 })
             }
-            
-            //得到xml中涉及到的所有路径
             var filesetList = getXmlNodeProp(fullDirXml, "fileset");
             if(filesetList.length != 0){
                 filesetList.forEach(function(item) {
@@ -138,13 +112,8 @@ function getWatchDir(dirName, func, context){
                     });
                 }, this);
             }
-            if(func && coreFunc.isObject(func)){
-                func.call(context, dirList);
-            }
-        }else{
-            console.log(err);
-        }
     });
+    
     
     /**
      * 创建用于映射的特殊obj
@@ -154,12 +123,6 @@ function getWatchDir(dirName, func, context){
      */
     function createWatchObj(item, func){
         var obj = {};
-        if(!item.dir){
-            return false;
-        }
-        if(!item.includes){
-            return false;
-        }
         //修复路径
         //分组捕获:
         //1.**
@@ -226,7 +189,6 @@ function getXmlNodeProp(xmlFile, nodeName){
  * @param callback(fileIndex) 监听处理后的回调
  */
 function setAllWatch(callback){
-    fs.watch(path,{recursive: true},function(event, fileDir){
         //普通编译器修改文件后监听到的事件是change,然而webstorm是rename
         if(event == "change" || event == "rename"){
             if(fileDir){
@@ -236,22 +198,7 @@ function setAllWatch(callback){
                     return;
                 }
                 
-                var regExpDir = /(.*\/)*(.*\.js)$/;
-                if(config.windows){
-                    regExpDir = /(.*\\)*(.*\.js)$/;
-                }
                     
-                //分组捕获将路径的文件名和目录名分离 ;
-                //["all","dir","js name"]
-                var fileProp = fileDir.match(regExpDir);
-                var fileIndex,fileName;
-                if(fileProp){
-                    if(!config.windows){
-                        fileIndex = coreFunc.unifiedDir(fileProp[1]?fileProp[1]:"");
-                    }else{
-                        fileIndex = coreFunc.unifiedDirInWin(fileProp[1]?fileProp[1]:"");
-                    }
-                    fileName = fileProp[2];
                     //过滤文件列表
                     if(config.ignoreDirList){
                         if(ignoreDirList.length != 0){
@@ -328,7 +275,6 @@ function setAllWatch(callback){
  * @param callback 监听到改变后的回调
  */
 function setRootWatch(dir,callback){
-    fs.watch(path + dir, function(event, xmlName){
         if(event == "change"){
             if(xmlName){
                 //不是.js.xml文件后缀的都不处理
@@ -344,7 +290,6 @@ function setRootWatch(dir,callback){
                     
                     //重新写入xml信息
                     var oldJs = xmlObjList[xmlName];
-                    getWatchDir(xmlName,function(jsList){
                         if(jsList){
                             var invertJsList = coreFunc.invertObjObj(jsList);
                             var diff = diffFileList(oldJs,invertJsList[xmlName]);
@@ -423,7 +368,6 @@ function setRootWatch(dir,callback){
 function antBuild(fileName, args, logSwitch, callback){
     args = args ? args : "";
     exec("ant -f " + fileName + " " + args,{
-            cwd:path	//指定工作路径
         },function(error, stdout, stderr){
             if(logSwitch){
                 console.log(stdout);
@@ -569,15 +513,6 @@ function libFunc(){
             return fixDir;
         },
         /**
-         * 将目录路径统一格式(windows下兼容)
-         * @param dir 路径
-         * @eg: unifiedDir(".\ui\sdf") --> "ui/sdf/" 即将windows的文件路径改变成mac风格
-         */
-        unifiedDirInWin: function(dir){
-            var macDir = dir.replace(/\\/g,"/");
-            return this.unifiedDir(macDir);
-        },
-        /**
          * 监视object的属性有没有增加
          * @param obj object
          * @param func 不改变后的回调
@@ -595,8 +530,6 @@ function libFunc(){
             var length = 0;
             var intervalId = setInterval(function(){
                 var newLength = Object.getOwnPropertyNames(obj).length;
-                // console.log("old:" + length);
-                // console.log("new:" + newLength);
                 if(newLength != length){
                     length = newLength;
                 }else{
