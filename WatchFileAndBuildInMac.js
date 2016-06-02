@@ -11,6 +11,8 @@
 
 //------------ config start ------------->
 var coreFunc = libFunc();
+var rootPath = process.cwd() + "/";  //普通命令行里的路径
+//var rootPath = "m2015/js/";    //vsCode上的路径
 //全局配置
 var config = {
     //忽略xml中的注释
@@ -50,11 +52,30 @@ addPromiseDone();
     //先全部文件打个包
     console.log("执行ant构建:packAll.xml,请稍后...");
     antBuild("packAll.xml", "", config.showAntLog, main);
+        
     function main(){
         //写文件映射列表
+        readDir(rootPath)
+        .then(function(files){
+            Promise.all(files.map(readXml))
+            .then(function(){
+                //当所有文件异步读取后，输出信息
+                console.log("===正在监控文件变化，使用control+c或者点击关闭按钮退出===");
+            }).done();
+            
+            function readXml(file){
+                return new Promise(function(resolve){
+                    getWatchDir(file)
+                    .then(function(dirList){
                         coreFunc.extend(watchObjList,dirList);
                         coreFunc.extend(xmlObjList,coreFunc.invertObjObj(dirList));
+                        resolve();
+                    })
+                });
+            }
+        }).done();
         
+        //针对改变过的js自动打包
         setAllWatch(function(xmlList){
             var date = coreFunc.formatDate("[yyyy.MM.dd hh:mm:ss]", new Date());
             xmlList.forEach(function(xml) {
@@ -63,6 +84,7 @@ addPromiseDone();
             }, this);
         });
         
+        //自动打包改变过的xml
         setRootWatch("",function(filename){
             var date = coreFunc.formatDate("[yyyy.MM.dd hh:mm:ss]", new Date());
             antBuild(filename, "-S", config.showAntLog);
@@ -80,6 +102,16 @@ addPromiseDone();
  * @param context 上下文环境
  */
 function getWatchDir(dirName, func, context){
+    var supportXml = /.js.xml$/;
+    
+    return new Promise(function(resolve,reject){
+        if(dirName.match(supportXml) == null){
+             resolve({});
+             return false;
+        }
+        
+        readFile(rootPath + dirName,'utf-8')
+        .then(function(data){//将xml中property属性拼回去
             var propList = getXmlNodeProp(data, "property");
             var fullDirXml = data;
             if(propList.length != 0){
@@ -93,10 +125,15 @@ function getWatchDir(dirName, func, context){
                     }else if(fileset.location){
                         value = fileset.location;
                     }else{
+                        console.log(rootPath + dirName + ":property prop error!");
                     }
                     fullDirXml = fullDirXml.replace(regexp,value);
                 })
             }
+            return fullDirXml;
+        })
+        .then(function(fullDirXml){//得到xml中涉及到的所有路径
+            var dirList = {};
             var filesetList = getXmlNodeProp(fullDirXml, "fileset");
             if(filesetList.length != 0){
                 filesetList.forEach(function(item) {
@@ -112,7 +149,11 @@ function getWatchDir(dirName, func, context){
                     });
                 }, this);
             }
+            return dirList;
+        })
+        .then((dirList) => resolve(dirList)).done();
     });
+    
     
     
     /**
@@ -123,6 +164,8 @@ function getWatchDir(dirName, func, context){
      */
     function createWatchObj(item, func){
         var obj = {};
+        if(!item.dir) return false;
+        if(!item.includes) return false;
         //修复路径
         //分组捕获:
         //1.**
@@ -189,6 +232,7 @@ function getXmlNodeProp(xmlFile, nodeName){
  * @param callback(fileIndex) 监听处理后的回调
  */
 function setAllWatch(callback){
+    fs.watch(rootPath,{recursive: true},function(event, fileDir){
         //普通编译器修改文件后监听到的事件是change,然而webstorm是rename
         if(event == "change" || event == "rename"){
             if(fileDir){
@@ -198,7 +242,14 @@ function setAllWatch(callback){
                     return;
                 }
                 
+                //获取js文件的根目录
+                var fileDirArray = fileDir.split(path.sep);
+                var fileName = fileDirArray.pop();
+                var fileRoot = fileDirArray.join(path.sep);
                     
+                var fileIndex;
+                if(fileRoot){
+                    fileIndex = coreFunc.unifiedDir(fileRoot);
                     //过滤文件列表
                     if(config.ignoreDirList){
                         if(ignoreDirList.length != 0){
@@ -275,6 +326,7 @@ function setAllWatch(callback){
  * @param callback 监听到改变后的回调
  */
 function setRootWatch(dir,callback){
+    fs.watch(rootPath + dir, function(event, xmlName){
         if(event == "change"){
             if(xmlName){
                 //不是.js.xml文件后缀的都不处理
@@ -290,6 +342,9 @@ function setRootWatch(dir,callback){
                     
                     //重新写入xml信息
                     var oldJs = xmlObjList[xmlName];
+                    
+                    getWatchDir(xmlName)
+                    .then(function(jsList){
                         if(jsList){
                             var invertJsList = coreFunc.invertObjObj(jsList);
                             var diff = diffFileList(oldJs,invertJsList[xmlName]);
@@ -368,6 +423,7 @@ function setRootWatch(dir,callback){
 function antBuild(fileName, args, logSwitch, callback){
     args = args ? args : "";
     exec("ant -f " + fileName + " " + args,{
+            cwd:rootPath	//指定工作路径
         },function(error, stdout, stderr){
             if(logSwitch){
                 console.log(stdout);
@@ -376,6 +432,54 @@ function antBuild(fileName, args, logSwitch, callback){
                 callback();
             }
     });
+}
+
+/**
+ * 用promise实现的readFile
+ */
+function readFile(rootPath,option){
+    option = option || null;
+    return new Promise(function(resolve,reject){
+        fs.readFile(rootPath,option,function(err,data){
+            if(err){
+                reject(err);
+            }else{
+                resolve(data);
+            }
+        });
+    });
+}
+
+/**
+ * 用promise实现的readdir
+ */
+function readDir(rootPath){
+    return new Promise(function(resolve,reject){
+        fs.readdir(rootPath,function(err,files){
+            if(err){
+                reject(err);
+            }else{
+                resolve(files);
+            }
+        });
+    });
+}
+
+function watch(rootPath,options){
+    fs.watch(rootPath,options)
+}
+
+/**
+ * promise的全局保险
+ */
+function addPromiseDone(){
+    Promise.prototype.done = function(onFulfilled, onRejected){
+        this.then(onFulfilled, onRejected)
+            .catch(function(reason){
+                //抛出全局错误
+                setTimeout(() => {throw reason},0)
+            });
+    }
 }
 
 /**
@@ -511,32 +615,6 @@ function libFunc(){
             }
 
             return fixDir;
-        },
-        /**
-         * 监视object的属性有没有增加
-         * @param obj object
-         * @param func 不改变后的回调
-         * @param time (可选,默认50)指定的时间间隔
-         */
-        watchObjChange: function(obj, func, time){
-            if(!this.isObject){
-                return;
-            }
-            if(time){
-                time = parseInt(time,10);
-            }else{
-                time = 50;
-            }
-            var length = 0;
-            var intervalId = setInterval(function(){
-                var newLength = Object.getOwnPropertyNames(obj).length;
-                if(newLength != length){
-                    length = newLength;
-                }else{
-                    clearInterval(intervalId);
-                    func();
-                }
-            },time);
         },
         /**
          * 将文件节流不让其在短时间内多次改变
